@@ -1,0 +1,88 @@
+export async function apiRequest(path, options = {}) {
+  const mergedHeaders = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+
+  const response = await fetch(path, {
+    ...options,
+    headers: mergedHeaders,
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.message || "Request failed");
+  }
+
+  return payload;
+}
+
+function getAuthCacheKey(path) {
+  const token = getToken();
+  const tokenKey = token ? token.slice(0, 16) : "guest";
+  return `split-smartly:cache:${tokenKey}:${path}`;
+}
+
+export function readCachedAuthResponse(path) {
+  try {
+    const raw = sessionStorage.getItem(getAuthCacheKey(path));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+}
+
+export function writeCachedAuthResponse(path, data) {
+  try {
+    sessionStorage.setItem(getAuthCacheKey(path), JSON.stringify(data));
+  } catch (_error) {
+    // Ignore storage failures.
+  }
+}
+
+export function getToken() {
+  return localStorage.getItem("token") || "";
+}
+
+export function getStoredUser() {
+  try {
+    const raw = localStorage.getItem("user");
+    return raw ? JSON.parse(raw) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+export function setAuthSession({ token, user }) {
+  if (token) {
+    localStorage.setItem("token", token);
+  }
+  if (user) {
+    localStorage.setItem("user", JSON.stringify(user));
+  }
+}
+
+export function clearAuthSession() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+}
+
+export async function authApiRequest(path, options = {}) {
+  const token = getToken();
+  const headers = {
+    ...(options.headers || {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  return apiRequest(path, {
+    ...options,
+    headers,
+  });
+}
