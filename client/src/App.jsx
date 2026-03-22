@@ -24,7 +24,10 @@ _jsx(QueryClientProvider, { client: queryClient, children: /*#__PURE__*/
   _jsxs(TooltipProvider, { children: [/*#__PURE__*/
     _jsx(Toaster, {}), /*#__PURE__*/
     _jsx(Sonner, {}), /*#__PURE__*/
-    _jsx(BrowserRouter, { children: /*#__PURE__*/
+    _jsx(BrowserRouter, { future: {
+      v7_startTransition: true,
+      v7_relativeSplatPath: true,
+    }, children: /*#__PURE__*/
       _jsxs(Routes, { children: [/*#__PURE__*/
         _jsx(Route, { path: "/", element: /*#__PURE__*/_jsx(Landing, {}) }), /*#__PURE__*/
         _jsx(Route, { path: "/login", element: /*#__PURE__*/_jsx(Login, {}) }), /*#__PURE__*/

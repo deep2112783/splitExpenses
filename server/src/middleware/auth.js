@@ -2,6 +2,10 @@ import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import { User } from "../models/User.js";
 
+function getJwtSecret() {
+  return process.env.JWT_SECRET || "";
+}
+
 export async function requireAuth(req, res, next) {
   try {
     if (mongoose.connection.readyState !== 1) {
@@ -17,7 +21,11 @@ export async function requireAuth(req, res, next) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const secret = process.env.JWT_SECRET || "dev-secret-change-me";
+    const secret = getJwtSecret();
+    if (!secret) {
+      return res.status(500).json({ message: "Server authentication is not configured." });
+    }
+
     const payload = jwt.verify(token, secret);
 
     const user = await User.findById(payload.userId).select("-password");

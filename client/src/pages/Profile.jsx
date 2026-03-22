@@ -12,6 +12,7 @@ import {
   setAuthSession,
   writeCachedAuthResponse,
 } from "@/lib/api";
+import { isValidUpiId } from "@/lib/upi";
 import { toast } from "sonner";
 
 function getInitials(name) {
@@ -73,6 +74,11 @@ const Profile = () => {
     // Basic email validation
     if (!email.includes("@")) {
       toast.error("Please enter a valid email");
+      return;
+    }
+
+    if (upiId.trim() && !isValidUpiId(upiId.trim())) {
+      toast.error("Please enter a valid UPI ID");
       return;
     }
 

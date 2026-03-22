@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { TrendingDown, TrendingUp, Calendar, Wallet, Check, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import AppLayout from "@/components/layout/AppLayout";
 import { formatCurrency, getInitials } from "@/lib/mock-data";
-import { authApiRequest, readCachedAuthResponse, writeCachedAuthResponse } from "@/lib/api";
+import { authApiRequest, getStoredUser, readCachedAuthResponse, writeCachedAuthResponse } from "@/lib/api";
 import { toast } from "sonner";
 
 const Balances = () => {
+  const currentUser = getStoredUser();
   const [totals, setTotals] = useState({ youOwe: 0, youAreOwed: 0, net: 0 });
   const [monthlyBalances, setMonthlyBalances] = useState([]);
   const [settlements, setSettlements] = useState([]);
@@ -26,7 +27,7 @@ const Balances = () => {
     if (cached) {
       setTotals(cached.totals || { youOwe: 0, youAreOwed: 0, net: 0 });
       setMonthlyBalances(cached.monthlyBalances || []);
-      setSettlements((cached.settlements || []).filter((item) => item.direction === "pay"));
+      setSettlements(cached.settlements || []);
       setLoading(false);
     }
 
@@ -34,7 +35,7 @@ const Balances = () => {
       const data = await authApiRequest("/api/dashboard/balances");
       setTotals(data.totals || { youOwe: 0, youAreOwed: 0, net: 0 });
       setMonthlyBalances(data.monthlyBalances || []);
-      setSettlements((data.settlements || []).filter((item) => item.direction === "pay"));
+      setSettlements(data.settlements || []);
       writeCachedAuthResponse("/api/dashboard/balances", data);
     } catch (err) {
       if (!cached) {
@@ -51,22 +52,18 @@ const Balances = () => {
   const totalOwed = useMemo(() => Number(totals.youAreOwed || 0), [totals.youAreOwed]);
   const totalOwe = useMemo(() => Number(totals.youOwe || 0), [totals.youOwe]);
   const totalNet = useMemo(() => Number(totals.net || 0), [totals.net]);
+  const paySettlements = useMemo(
+    () => settlements.filter((item) => item.direction === "pay"),
+    [settlements],
+  );
+  const receiveSettlements = useMemo(
+    () => settlements.filter((item) => item.direction === "receive"),
+    [settlements],
+  );
 
   const handleSettle = (target) => {
     setSettleTarget(target);
     setSettleOpen(true);
-  };
-
-  const handlePayViaUPI = () => {
-    if (!settleTarget) return;
-    if (!settleTarget.user?.upiId) {
-      toast.error("Recipient UPI ID not available");
-      return;
-    }
-
-    const upiLink = `upi://pay?pa=${settleTarget.user.upiId}&pn=${settleTarget.user.name}&am=${settleTarget.amount}&cu=INR&tn=SplitSmart+Settlement+-+${settleTarget.groupName}`;
-    window.open(upiLink, "_blank");
-    toast.success("Payment initiated. Click 'Mark as Settled' after payment.");
   };
 
   async function confirmSettlement() {
@@ -83,8 +80,8 @@ const Balances = () => {
         }),
       });
       toast.success(`Settlement recorded with ${settleTarget.user.name}`);
-      setSettleOpen(false);
       setSettleTarget(null);
+      setSettleOpen(false);
       await loadBalanceData();
     } catch (err) {
       toast.error(err.message || "Failed to record settlement");
@@ -162,53 +159,104 @@ const Balances = () => {
               </motion.div>
             </div>
 
-            {settlements.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.35 }}
-                className="bg-card rounded-2xl border border-border p-5"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-display font-semibold text-lg flex items-center gap-2">
-                    <Send className="w-5 h-5 text-primary" /> Settle Up
-                  </h2>
-                  <span className="text-xs text-muted-foreground bg-destructive/10 text-owe px-2.5 py-1 rounded-full font-medium">
-                    {settlements.length} pending
-                  </span>
-                </div>
-                <div className="space-y-3">
-                  {settlements.map((s, i) => (
-                    <motion.div
-                      key={`${s.groupId}-${s.user.id}`}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.05 * i }}
-                      className="flex items-center justify-between p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
-                          {getInitials(s.user.name)}
-                        </div>
-                        <div>
-                          <p className="font-medium text-sm">{s.user.name}</p>
-                          <p className="text-xs text-muted-foreground">{s.groupName}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-bold text-owe">{formatCurrency(s.amount)}</span>
-                        <Button
-                          size="sm"
-                          className="bg-gradient-primary text-primary-foreground rounded-xl h-8 px-3 text-xs shadow-glow"
-                          onClick={() => handleSettle(s)}
+            {(paySettlements.length > 0 || receiveSettlements.length > 0) && (
+              <div className="grid lg:grid-cols-2 gap-6">
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.35 }}
+                  className="bg-card rounded-2xl border border-border p-5"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="font-display font-semibold text-lg flex items-center gap-2">
+                      <Send className="w-5 h-5 text-primary" /> You Owe
+                    </h2>
+                    <span className="text-xs text-muted-foreground bg-destructive/10 text-owe px-2.5 py-1 rounded-full font-medium">
+                      {paySettlements.length} pending
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {paySettlements.length === 0 ? (
+                      <div className="text-sm text-muted-foreground py-4">No pending payments</div>
+                    ) : (
+                      paySettlements.map((s, i) => (
+                        <motion.div
+                          key={`${s.groupId}-${s.user.id}-pay`}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: 0.05 * i }}
+                          className="flex items-center justify-between p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors"
                         >
-                          <Wallet className="w-3.5 h-3.5 mr-1" /> Pay
-                        </Button>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.div>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                              {getInitials(s.user.name)}
+                            </div>
+                            <div>
+                              <p className="font-medium text-sm">{s.user.name}</p>
+                              <p className="text-xs text-muted-foreground">{s.groupName}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-bold text-owe">{formatCurrency(s.amount)}</span>
+                            <Button
+                              size="sm"
+                              className="bg-gradient-primary text-primary-foreground rounded-xl h-8 px-3 text-xs shadow-glow"
+                              onClick={() => handleSettle(s)}
+                            >
+                              <Wallet className="w-3.5 h-3.5 mr-1" /> Pay
+                            </Button>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="bg-card rounded-2xl border border-border p-5"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="font-display font-semibold text-lg flex items-center gap-2">
+                      <TrendingDown className="w-5 h-5 text-owed" /> Owed To You
+                    </h2>
+                    <span className="text-xs text-muted-foreground bg-success/10 text-owed px-2.5 py-1 rounded-full font-medium">
+                      {receiveSettlements.length} pending
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {receiveSettlements.length === 0 ? (
+                      <div className="text-sm text-muted-foreground py-4">Nobody owes you right now</div>
+                    ) : (
+                      receiveSettlements.map((s, i) => (
+                        <motion.div
+                          key={`${s.groupId}-${s.user.id}-receive`}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: 0.05 * i }}
+                          className="flex items-center justify-between p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                              {getInitials(s.user.name)}
+                            </div>
+                            <div>
+                              <p className="font-medium text-sm">{s.user.name}</p>
+                              <p className="text-xs text-muted-foreground">{s.groupName}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-bold text-owed">{formatCurrency(s.amount)}</p>
+                            <p className="text-xs text-muted-foreground">They owe you</p>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+              </div>
             )}
 
             <motion.div
@@ -226,23 +274,30 @@ const Balances = () => {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.05 * i }}
                     className="flex items-center justify-between p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                        <Calendar className="w-5 h-5 text-primary" />
-                      </div>
-                      <div>
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                          <Calendar className="w-5 h-5 text-primary" />
+                        </div>
+                      <div className="min-w-0">
                         <p className="font-medium text-sm">{b.month} {b.year}</p>
-                        <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
-                          <span className="text-owed">+{formatCurrency(b.owed)}</span>
-                          <span className="text-owe">-{formatCurrency(b.owe)}</span>
+                        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground mt-0.5">
+                          <span className="text-owed">Paid {formatCurrency(b.paid)}</span>
+                          <span className="text-owe">Your share {formatCurrency(b.share)}</span>
+                          <span>{b.expenseCount || 0} expense{(b.expenseCount || 0) === 1 ? "" : "s"}</span>
+                          <span>{b.settlementCount || 0} settlement{(b.settlementCount || 0) === 1 ? "" : "s"}</span>
                         </div>
                       </div>
                     </div>
-                    <span className={`text-sm font-bold ${b.net >= 0 ? "text-owed" : "text-owe"}`}>
-                      {b.net >= 0 ? "+" : ""}
-                      {formatCurrency(b.net)}
-                    </span>
+                    <div className="text-right shrink-0">
+                      <span className={`text-sm font-bold ${b.net >= 0 ? "text-owed" : "text-owe"}`}>
+                        {b.net >= 0 ? "+" : ""}
+                        {formatCurrency(b.net)}
+                      </span>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        {b.net >= 0 ? "Net positive" : "Net negative"}
+                      </p>
+                    </div>
                   </motion.div>
                 ))}
                 {monthlyBalances.length === 0 && (
@@ -258,6 +313,9 @@ const Balances = () => {
         <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
             <DialogTitle className="font-display text-xl">Settle Payment</DialogTitle>
+            <DialogDescription className="sr-only">
+              Settlement details and payment actions for the selected balance.
+            </DialogDescription>
           </DialogHeader>
           {settleTarget && (
             <div className="space-y-5">
@@ -270,38 +328,21 @@ const Balances = () => {
                 <p className="text-xs text-muted-foreground mt-1">for {settleTarget.groupName}</p>
               </div>
 
-              <div className="bg-secondary/30 rounded-xl p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground">UPI ID</p>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(settleTarget.user.upiId || "");
-                      toast.success("UPI ID copied");
-                    }}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Copy
-                  </button>
-                </div>
-                <p className="font-medium font-mono text-sm">{settleTarget.user.upiId || "Not available"}</p>
-              </div>
-
-              <div className="space-y-2.5">
-                <Button
-                  onClick={handlePayViaUPI}
-                  className="w-full bg-gradient-primary text-primary-foreground rounded-xl h-12 shadow-glow text-sm font-semibold"
-                  disabled={!settleTarget.user.upiId}
-                >
-                  <Wallet className="w-4 h-4 mr-2" /> Pay via UPI
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full rounded-xl h-11"
+                <div className="space-y-2.5">
+                  <Button
                   onClick={confirmSettlement}
+                  className="w-full bg-gradient-primary text-primary-foreground rounded-xl h-12 shadow-glow text-sm font-semibold"
                   disabled={settling}
-                >
-                  <Check className="w-4 h-4 mr-2" /> {settling ? "Saving..." : "Mark as Settled"}
-                </Button>
+                  >
+                    <Wallet className="w-4 h-4 mr-2" /> {settling ? "Saving..." : "Settle Now"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full rounded-xl h-11"
+                    onClick={() => setSettleOpen(false)}
+                  >
+                    Cancel
+                  </Button>
               </div>
             </div>
           )}

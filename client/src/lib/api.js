@@ -20,7 +20,30 @@ export async function apiRequest(path, options = {}) {
     throw new Error(payload?.message || "Request failed");
   }
 
+  const method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    clearAuthCache();
+  }
+
   return payload;
+}
+
+function clearAuthCache() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < sessionStorage.length; i += 1) {
+      const key = sessionStorage.key(i);
+      if (key?.startsWith("split-smartly:cache:")) {
+        keysToRemove.push(key);
+      }
+    }
+
+    for (const key of keysToRemove) {
+      sessionStorage.removeItem(key);
+    }
+  } catch (_error) {
+    // Ignore storage failures.
+  }
 }
 
 function getAuthCacheKey(path) {
@@ -61,6 +84,7 @@ export function getStoredUser() {
 }
 
 export function setAuthSession({ token, user }) {
+  clearAuthCache();
   if (token) {
     localStorage.setItem("token", token);
   }
@@ -70,6 +94,7 @@ export function setAuthSession({ token, user }) {
 }
 
 export function clearAuthSession() {
+  clearAuthCache();
   localStorage.removeItem("token");
   localStorage.removeItem("user");
 }

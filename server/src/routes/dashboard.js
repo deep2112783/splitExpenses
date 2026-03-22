@@ -9,6 +9,14 @@ const router = express.Router();
 
 router.use(requireAuth);
 
+function isExpenseRelevantToUser(expense, userId) {
+  const normalizedUserId = userId.toString();
+  return (expense.splits || []).some((split) => {
+    const splitUserId = split.user?._id?.toString() || split.user?.toString();
+    return splitUserId === normalizedUserId && Number(split.amount || 0) > 0;
+  });
+}
+
 router.get("/", async (req, res) => {
   try {
     const userId = req.user._id;
@@ -44,6 +52,7 @@ router.get("/", async (req, res) => {
     }
 
     const unreadCount = await Notification.countDocuments({ user: userId, read: false });
+    const relevantRecentExpenses = expenses.filter((expense) => isExpenseRelevantToUser(expense, userId));
 
     return res.json({
       user: {
@@ -60,7 +69,7 @@ router.get("/", async (req, res) => {
         unreadNotifications: unreadCount,
       },
       groups: groups.map((group) => toGroupDto(group, expensesByGroup.get(group._id.toString()) || [], userId)),
-      recentExpenses: expenses.slice(0, 8).map(toExpenseDto),
+      recentExpenses: relevantRecentExpenses.slice(0, 8).map(toExpenseDto),
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to load dashboard", error: error.message });
@@ -80,7 +89,9 @@ router.get("/expenses", async (req, res) => {
       .populate("splits.user", "name email upiId")
       .sort({ date: -1, createdAt: -1 });
 
-    const expenseDtos = expenses.map((expense) => {
+    const expenseDtos = expenses
+      .filter((expense) => isExpenseRelevantToUser(expense, userId))
+      .map((expense) => {
       const dto = toExpenseDto(expense);
       const group = groupMap.get(dto.groupId);
       return {
@@ -93,7 +104,7 @@ router.get("/expenses", async (req, res) => {
             }
           : null,
       };
-    });
+      });
 
     return res.json({ expenses: expenseDtos });
   } catch (error) {
@@ -146,72 +157,56 @@ router.get("/balances", async (req, res) => {
         balance: myBalance,
       });
 
-      const memberRows = (group.members || []).map((member) => {
-        const memberId = member.user?._id?.toString() || member.user?.toString();
-        const balance = Number(balanceMap.get(memberId) || 0);
-        return {
-          id: memberId,
-          name: member.user?.name || "Unknown",
-          email: member.user?.email || "",
-          upiId: member.user?.upiId || "",
-          balance,
-        };
-      });
+      const pairDebts = new Map();
 
-      if (myBalance < -0.01) {
-        let remainingToPay = Number(Math.abs(myBalance).toFixed(2));
-        const creditors = memberRows
-          .filter((member) => member.id !== userId.toString() && member.balance > 0.01)
-          .sort((a, b) => b.balance - a.balance);
+      for (const expense of groupExpenses) {
+        const payerId = expense.paidBy?._id?.toString() || expense.paidBy?.toString();
+        if (!payerId) continue;
 
-        for (const creditor of creditors) {
-          if (remainingToPay <= 0.01) break;
-          const amount = Math.min(remainingToPay, Number(creditor.balance.toFixed(2)));
-          if (amount <= 0.01) continue;
+        for (const split of expense.splits || []) {
+          const debtorId = split.user?._id?.toString() || split.user?.toString();
+          if (!debtorId || debtorId === payerId) continue;
 
-          settlements.push({
-            groupId: group._id.toString(),
-            groupName: group.name,
-            user: {
-              id: creditor.id,
-              name: creditor.name,
-              email: creditor.email,
-              upiId: creditor.upiId,
-            },
-            amount: Number(amount.toFixed(2)),
-            direction: "pay",
-          });
-
-          remainingToPay = Number((remainingToPay - amount).toFixed(2));
+          const key = `${debtorId}->${payerId}`;
+          const current = Number(pairDebts.get(key) || 0);
+          pairDebts.set(key, current + Number(split.amount || 0));
         }
       }
 
-      if (myBalance > 0.01) {
-        let remainingToReceive = Number(myBalance.toFixed(2));
-        const debtors = memberRows
-          .filter((member) => member.id !== userId.toString() && member.balance < -0.01)
-          .sort((a, b) => a.balance - b.balance);
+      for (const member of group.members || []) {
+        const memberId = member.user?._id?.toString() || member.user?.toString();
+        if (!memberId || memberId === userId.toString()) continue;
 
-        for (const debtor of debtors) {
-          if (remainingToReceive <= 0.01) break;
-          const debtorAmount = Number(Math.abs(debtor.balance).toFixed(2));
-          const amount = Math.min(remainingToReceive, debtorAmount);
-          if (amount <= 0.01) continue;
+        const iOwe = Number(pairDebts.get(`${userId.toString()}->${memberId}`) || 0);
+        const theyOwe = Number(pairDebts.get(`${memberId}->${userId.toString()}`) || 0);
+        const net = Number((iOwe - theyOwe).toFixed(2));
 
+        if (net > 0.01) {
           settlements.push({
             groupId: group._id.toString(),
             groupName: group.name,
             user: {
-              id: debtor.id,
-              name: debtor.name,
-              email: debtor.email,
-              upiId: debtor.upiId,
+              id: memberId,
+              name: member.user?.name || "Unknown",
+              email: member.user?.email || "",
+              upiId: member.user?.upiId || "",
             },
-            amount: Number(amount.toFixed(2)),
+            amount: net,
+            direction: "pay",
+          });
+        } else if (net < -0.01) {
+          settlements.push({
+            groupId: group._id.toString(),
+            groupName: group.name,
+            user: {
+              id: memberId,
+              name: member.user?.name || "Unknown",
+              email: member.user?.email || "",
+              upiId: member.user?.upiId || "",
+            },
+            amount: Number(Math.abs(net).toFixed(2)),
             direction: "receive",
           });
-
-          remainingToReceive = Number((remainingToReceive - amount).toFixed(2));
         }
       }
     }
@@ -219,26 +214,39 @@ router.get("/balances", async (req, res) => {
     const monthlyMap = new Map();
 
     for (const expense of expenses) {
+      if (expense.category === "Settlement") continue;
+
       const monthDate = new Date(expense.date || expense.createdAt);
       const key = `${monthDate.getFullYear()}-${monthDate.getMonth() + 1}`;
       const current = monthlyMap.get(key) || {
         month: monthDate.toLocaleString("en-IN", { month: "long" }),
         year: monthDate.getFullYear(),
-        owed: 0,
-        owe: 0,
+        paid: 0,
+        share: 0,
+        expenseCount: 0,
+        settlementCount: 0,
       };
 
-      const paidById = expense.paidBy?._id?.toString() || expense.paidBy?.toString();
-      if (paidById === userId.toString()) {
-        current.owed += Number(expense.amount || 0);
+      if (expense.category === "Settlement") {
+        current.settlementCount += 1;
+        monthlyMap.set(key, current);
+        continue;
       }
 
+      current.expenseCount += 1;
+
+      const paidById = expense.paidBy?._id?.toString() || expense.paidBy?.toString();
       const mySplit = (expense.splits || []).find((split) => {
         const splitUserId = split.user?._id?.toString() || split.user?.toString();
         return splitUserId === userId.toString();
       });
+
+      if (paidById === userId.toString()) {
+        current.paid += Number(expense.amount || 0);
+      }
+
       if (mySplit) {
-        current.owe += Number(mySplit.amount || 0);
+        current.share += Number(mySplit.amount || 0);
       }
 
       monthlyMap.set(key, current);
@@ -249,7 +257,7 @@ router.get("/balances", async (req, res) => {
         const [year, month] = key.split("-").map(Number);
         return {
           ...item,
-          net: item.owed - item.owe,
+          net: item.paid - item.share,
           sortKey: year * 100 + month,
         };
       })

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { Bell, Users, Wallet, Receipt, LogOut, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import AppLayout from "@/components/layout/AppLayout";
@@ -18,6 +19,7 @@ const iconMap = {
 };
 
 const Notifications = () => {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -26,6 +28,17 @@ const Notifications = () => {
 
   useEffect(() => {
     loadNotifications();
+  }, []);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setSelectedIds([]);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   async function loadNotifications() {
@@ -51,6 +64,29 @@ const Notifications = () => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id],
     );
+  }
+
+  async function handleOpenNotification(notification) {
+    try {
+      if (!notification.read) {
+        await authApiRequest(`/api/notifications/${notification.id}/read`, {
+          method: "PATCH",
+        });
+        setNotifications((prev) =>
+          prev.map((item) => (item.id === notification.id ? { ...item, read: true } : item)),
+        );
+        refreshUnreadCount();
+      }
+    } catch (_error) {
+      // Navigation is still more useful than blocking on read-state updates.
+    }
+
+    if (notification.groupId) {
+      navigate(`/groups/${notification.groupId}`);
+      return;
+    }
+
+    navigate("/notifications");
   }
 
   async function markSelectedRead() {
@@ -190,29 +226,50 @@ const Notifications = () => {
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: i * 0.04 }}
-                    className={`flex items-start gap-3 p-4 rounded-2xl border transition-colors cursor-pointer ${
+                    className={`flex items-start gap-3 p-4 rounded-2xl border transition-colors ${
                       n.read ? "bg-card border-border" : "bg-primary/5 border-primary/20"
                     } ${selected ? "ring-1 ring-primary/40" : ""}`}
-                    onClick={() => toggleSelection(n.id)}
                   >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleSelection(n.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-3 h-4 w-4 shrink-0 rounded border-border"
+                      aria-label={`Select notification: ${n.message}`}
+                    />
+
                     <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleOpenNotification(n)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleOpenNotification(n);
+                        }
+                      }}
+                      className="flex items-start gap-3 flex-1 min-w-0 cursor-pointer"
+                    >
+                      <div
                       className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
                         n.read ? "bg-secondary" : "bg-primary/10"
                       }`}
-                    >
-                      <Icon className={`w-5 h-5 ${n.read ? "text-muted-foreground" : "text-primary"}`} />
-                    </div>
+                      >
+                        <Icon className={`w-5 h-5 ${n.read ? "text-muted-foreground" : "text-primary"}`} />
+                      </div>
 
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm ${n.read ? "text-muted-foreground" : "font-medium"}`}>{n.message}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {new Date(n.createdAt).toLocaleDateString("en-IN", {
-                          day: "numeric",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm ${n.read ? "text-muted-foreground" : "font-medium"}`}>{n.message}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {new Date(n.createdAt).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
                     </div>
                   </motion.div>
                 );

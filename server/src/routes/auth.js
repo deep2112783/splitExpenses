@@ -6,9 +6,17 @@ import { User } from "../models/User.js";
 
 const router = express.Router();
 
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET is missing. Set it in server/.env.");
+  }
+
+  return secret;
+}
+
 function signToken(userId) {
-  const secret = process.env.JWT_SECRET || "dev-secret-change-me";
-  return jwt.sign({ userId }, secret, { expiresIn: "7d" });
+  return jwt.sign({ userId }, getJwtSecret(), { expiresIn: "7d" });
 }
 
 function ensureDatabase(req, res, next) {

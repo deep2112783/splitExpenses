@@ -37,6 +37,7 @@ export function buildMemberBalances(group, expenses) {
 export function toGroupDto(group, expenses, currentUserId) {
   const balances = buildMemberBalances(group, expenses);
   const currentUserBalance = balances.get(asId(currentUserId)) || 0;
+  const spendingExpenses = (expenses || []).filter((expense) => expense.category !== "Settlement");
 
   return {
     id: asId(group._id),
@@ -45,7 +46,7 @@ export function toGroupDto(group, expenses, currentUserId) {
     category: group.category,
     code: group.code,
     status: group.status,
-    totalExpenses: expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0),
+    totalExpenses: spendingExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0),
     members: (group.members || []).map((member) => {
       const memberId = asId(member.user?._id || member.user);
       const user = member.user?._id

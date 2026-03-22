@@ -3,7 +3,7 @@
 ## Setup Instructions
 
 ### Prerequisites
-- Node.js (v16+)
+- Node.js (v18+)
 - npm or bun
 - MongoDB Atlas account with IP whitelisted
 - VS Code (recommended)

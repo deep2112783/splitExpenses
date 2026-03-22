@@ -4,9 +4,19 @@ import { requireAuth } from "../middleware/auth.js";
 import { Group } from "../models/Group.js";
 import { Expense } from "../models/Expense.js";
 import { Notification } from "../models/Notification.js";
-import { toExpenseDto, toGroupDto } from "../utils/finance.js";
+import { buildMemberBalances, toExpenseDto, toGroupDto } from "../utils/finance.js";
+import {
+  runInTransaction,
+  settleNetBalanceBetweenUsers,
+  settleSpecificExpenseForUser,
+  SettlementError,
+  updateGroupStatus,
+} from "../utils/settlements.js";
 
 const router = express.Router();
+
+const GROUP_CATEGORIES = new Set(["trip", "vacation", "family", "roommates", "friends", "other"]);
+const EXPENSE_SPLIT_TYPES = new Set(["equal", "custom"]);
 
 router.use(requireAuth);
 
@@ -26,6 +36,29 @@ async function generateUniqueGroupCode() {
 async function findGroupForUser(groupId, userId) {
   if (!mongoose.Types.ObjectId.isValid(groupId)) return null;
   return Group.findOne({ _id: groupId, "members.user": userId }).populate("members.user", "name email upiId");
+}
+
+function parseExpenseDate(value) {
+  if (!value) return new Date();
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function sanitizeCustomSplits(memberIds, customSplits) {
+  return memberIds.map((userId) => {
+    const rawValue = customSplits?.[userId];
+    const amount = Number(rawValue || 0);
+    return {
+      user: userId,
+      amount,
+      settled: false,
+    };
+  });
 }
 
 router.get("/", async (req, res) => {
@@ -57,9 +90,14 @@ router.post("/", async (req, res) => {
   try {
     const { name, groupName, description, category } = req.body || {};
     const resolvedName = String(name || groupName || "").trim();
+    const normalizedCategory = String(category || "other").trim().toLowerCase();
 
     if (!resolvedName) {
       return res.status(400).json({ message: "Group name is required." });
+    }
+
+    if (!GROUP_CATEGORIES.has(normalizedCategory)) {
+      return res.status(400).json({ message: "Invalid group category." });
     }
 
     const code = await generateUniqueGroupCode();
@@ -67,7 +105,7 @@ router.post("/", async (req, res) => {
     const group = await Group.create({
       name: resolvedName,
       description: (description || "").trim(),
-      category: category || "other",
+      category: normalizedCategory,
       code,
       status: "active",
       createdBy: req.user._id,
@@ -105,9 +143,8 @@ router.post("/join", async (req, res) => {
       return res.status(404).json({ message: "Group not found." });
     }
 
-    const alreadyMember = (group.members || []).some(
-      (member) => member.user.toString() === req.user._id.toString(),
-    );
+    const existingMemberIds = (group.members || []).map((member) => member.user.toString());
+    const alreadyMember = existingMemberIds.includes(req.user._id.toString());
 
     if (alreadyMember) {
       const fullGroup = await Group.findById(group._id).populate("members.user", "name email upiId");
@@ -117,38 +154,65 @@ router.post("/join", async (req, res) => {
       });
     }
 
-    const existingMemberIds = (group.members || []).map((member) => member.user.toString());
+    await runInTransaction(async (session) => {
+      const updateResult = await Group.updateOne(
+        {
+          _id: group._id,
+          "members.user": { $ne: req.user._id },
+        },
+        {
+          $push: {
+            members: { user: req.user._id, role: "member" },
+          },
+        },
+        { session },
+      );
 
-    group.members.push({ user: req.user._id, role: "member" });
-    await group.save();
+      if (updateResult.modifiedCount === 0) {
+        throw new Error("ALREADY_MEMBER");
+      }
 
-    const fullGroup = await Group.findById(group._id).populate("members.user", "name email upiId");
+      const joinNotifications = existingMemberIds.map((userId) => ({
+        user: userId,
+        type: "group_joined",
+        message: `${req.user.name} joined ${group.name}`,
+        group: group._id,
+        read: false,
+      }));
 
-    const joinNotifications = existingMemberIds.map((userId) => ({
-      user: userId,
-      type: "group_joined",
-      message: `${req.user.name} joined ${fullGroup.name}`,
-      group: fullGroup._id,
-      read: false,
-    }));
+      joinNotifications.push({
+        user: req.user._id,
+        type: "added_to_group",
+        message: `You joined ${group.name}`,
+        group: group._id,
+        read: false,
+      });
 
-    joinNotifications.push({
-      user: req.user._id,
-      type: "added_to_group",
-      message: `You joined ${fullGroup.name}`,
-      group: fullGroup._id,
-      read: false,
+      await Notification.insertMany(joinNotifications, { session });
+      await updateGroupStatus(group._id, session);
     });
 
-    if (joinNotifications.length > 0) {
-      await Notification.insertMany(joinNotifications);
-    }
+    const fullGroup = await Group.findById(group._id).populate("members.user", "name email upiId");
 
     return res.status(200).json({
       message: `Joined ${fullGroup.name} successfully.`,
       group: toGroupDto(fullGroup, [], req.user._id),
     });
   } catch (error) {
+    if (error.message === "ALREADY_MEMBER") {
+      const requestedCode = String(req.body?.code || "").trim().toUpperCase();
+      const requestedGroupId = String(req.body?.groupId || "").trim();
+      const fullGroup = requestedCode
+        ? await Group.findOne({ code: requestedCode }).populate("members.user", "name email upiId")
+        : mongoose.Types.ObjectId.isValid(requestedGroupId)
+          ? await Group.findById(requestedGroupId).populate("members.user", "name email upiId")
+          : null;
+
+      return res.status(200).json({
+        message: "You are already a member of this group.",
+        group: fullGroup ? toGroupDto(fullGroup, [], req.user._id) : undefined,
+      });
+    }
     return res.status(500).json({ message: "Failed to join group", error: error.message });
   }
 });
@@ -163,9 +227,11 @@ router.get("/:id", async (req, res) => {
       .populate("splits.user", "name email upiId")
       .sort({ date: -1, createdAt: -1 });
 
+    const visibleExpenses = expenses.filter((expense) => expense.category !== "Settlement");
+
     return res.json({
       group: toGroupDto(group, expenses, req.user._id),
-      expenses: expenses.map(toExpenseDto),
+      expenses: visibleExpenses.map(toExpenseDto),
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to load group", error: error.message });
@@ -178,9 +244,19 @@ router.post("/:id/expenses", async (req, res) => {
     if (!group) return res.status(404).json({ message: "Group not found" });
 
     const { title, amount, paidBy, date, category, notes, splitType = "equal", customSplits = {} } = req.body;
+    const normalizedSplitType = String(splitType || "equal").trim().toLowerCase();
+    const parsedDate = parseExpenseDate(date);
 
     if (!title || !amount || Number(amount) <= 0) {
       return res.status(400).json({ message: "Valid title and amount are required." });
+    }
+
+    if (!EXPENSE_SPLIT_TYPES.has(normalizedSplitType)) {
+      return res.status(400).json({ message: "Invalid split type." });
+    }
+
+    if (!parsedDate) {
+      return res.status(400).json({ message: "Invalid expense date." });
     }
 
     const memberIds = group.members.map((member) => member.user._id.toString());
@@ -193,12 +269,12 @@ router.post("/:id/expenses", async (req, res) => {
     let splits = [];
     const numericAmount = Number(amount);
 
-    if (splitType === "custom") {
-      splits = memberIds.map((userId) => ({
-        user: userId,
-        amount: Number(customSplits?.[userId] || 0),
-        settled: false,
-      }));
+    if (normalizedSplitType === "custom") {
+      splits = sanitizeCustomSplits(memberIds, customSplits);
+
+      if (splits.some((split) => !Number.isFinite(split.amount) || split.amount < 0)) {
+        return res.status(400).json({ message: "Custom split amounts must be valid positive numbers or zero." });
+      }
 
       const totalSplit = splits.reduce((sum, split) => sum + split.amount, 0);
       if (Math.abs(totalSplit - numericAmount) > 0.01) {
@@ -218,36 +294,46 @@ router.post("/:id/expenses", async (req, res) => {
       }
     }
 
-    const expense = await Expense.create({
-      group: group._id,
-      title: title.trim(),
-      amount: numericAmount,
-      paidBy: paidById,
-      date: date ? new Date(date) : new Date(),
-      category: category || "Other",
-      notes: notes || "",
-      splitType,
-      splits,
-      createdBy: req.user._id,
+    const createdExpense = await runInTransaction(async (session) => {
+      const [expense] = await Expense.create(
+        [
+          {
+            group: group._id,
+            title: title.trim(),
+            amount: numericAmount,
+            paidBy: paidById,
+            date: parsedDate,
+            category: category || "Other",
+            notes: notes || "",
+            splitType: normalizedSplitType,
+            splits,
+            createdBy: req.user._id,
+          },
+        ],
+        { session },
+      );
+
+      const notifications = group.members
+        .filter((member) => member.user._id.toString() !== req.user._id.toString())
+        .map((member) => ({
+          user: member.user._id,
+          type: "expense_added",
+          message: `${req.user.name} added '${title}' (${numericAmount}) in ${group.name}`,
+          group: group._id,
+          read: false,
+        }));
+
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications, { session });
+      }
+
+      await updateGroupStatus(group._id, session);
+      return expense;
     });
 
     const payer = group.members.find((member) => member.user._id.toString() === paidById)?.user;
 
-    const notifications = group.members
-      .filter((member) => member.user._id.toString() !== req.user._id.toString())
-      .map((member) => ({
-        user: member.user._id,
-        type: "expense_added",
-        message: `${req.user.name} added '${title}' (${numericAmount}) in ${group.name}`,
-        group: group._id,
-        read: false,
-      }));
-
-    if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
-    }
-
-    const created = await Expense.findById(expense._id)
+    const created = await Expense.findById(createdExpense._id)
       .populate("paidBy", "name email upiId")
       .populate("splits.user", "name email upiId");
 
@@ -265,107 +351,49 @@ router.post("/:id/expenses", async (req, res) => {
   }
 });
 
-router.post("/:id/settle", async (req, res) => {
+router.post("/:id/expenses/:expenseId/settle", async (req, res) => {
   try {
-    const group = await findGroupForUser(req.params.id, req.user._id);
-    if (!group) return res.status(404).json({ message: "Group not found" });
-
-    const { toUserId, amount, notes } = req.body || {};
-    const normalizedToUserId = String(toUserId || "").trim();
-    const numericAmount = Number(amount);
-
-    if (!mongoose.Types.ObjectId.isValid(normalizedToUserId)) {
-      return res.status(400).json({ message: "A valid recipient is required." });
-    }
-
-    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({ message: "A valid settlement amount is required." });
-    }
-
-    if (normalizedToUserId === req.user._id.toString()) {
-      return res.status(400).json({ message: "You cannot settle with yourself." });
-    }
-
-    const recipientMember = group.members.find(
-      (member) => member.user._id.toString() === normalizedToUserId,
-    );
-
-    if (!recipientMember) {
-      return res.status(400).json({ message: "Recipient must be a member of this group." });
-    }
-
-    const groupExpenses = await Expense.find({ group: group._id }).populate("splits.user", "_id");
-    let iOwe = 0;
-    let theyOwe = 0;
-
-    for (const expense of groupExpenses) {
-      const payerId = expense.paidBy?.toString();
-      if (!payerId) continue;
-
-      for (const split of expense.splits || []) {
-        const debtorId = split.user?._id?.toString() || split.user?.toString();
-        if (!debtorId || debtorId === payerId) continue;
-
-        const splitAmount = Number(split.amount || 0);
-        if (debtorId === req.user._id.toString() && payerId === normalizedToUserId) {
-          iOwe += splitAmount;
-        }
-
-        if (debtorId === normalizedToUserId && payerId === req.user._id.toString()) {
-          theyOwe += splitAmount;
-        }
-      }
-    }
-
-    const netOutstanding = Number((iOwe - theyOwe).toFixed(2));
-
-    if (netOutstanding <= 0) {
-      return res.status(400).json({ message: "No outstanding amount to settle with this member." });
-    }
-
-    if (numericAmount - netOutstanding > 0.01) {
-      return res.status(400).json({
-        message: `Settlement exceeds outstanding amount (${netOutstanding.toFixed(2)}).`,
+    const createdSettlement = await runInTransaction(async (session) => {
+      return settleSpecificExpenseForUser({
+        groupId: req.params.id,
+        expenseId: req.params.expenseId,
+        userId: req.user._id,
+        session,
       });
-    }
-
-    const settlement = await Expense.create({
-      group: group._id,
-      title: "Settlement",
-      amount: numericAmount,
-      paidBy: req.user._id,
-      date: new Date(),
-      category: "Settlement",
-      notes: String(notes || "").trim() || "Settlement payment",
-      splitType: "custom",
-      splits: [
-        {
-          user: recipientMember.user._id,
-          amount: numericAmount,
-          settled: true,
-        },
-      ],
-      createdBy: req.user._id,
     });
 
-    await Notification.insertMany([
-      {
-        user: recipientMember.user._id,
-        type: "payment_received",
-        message: `${req.user.name} paid you ${numericAmount.toFixed(2)} in ${group.name}`,
-        group: group._id,
-        read: false,
-      },
-      {
-        user: req.user._id,
-        type: "payment_sent",
-        message: `You paid ${recipientMember.user.name} ${numericAmount.toFixed(2)} in ${group.name}`,
-        group: group._id,
-        read: false,
-      },
-    ]);
+    const created = await Expense.findById(createdSettlement._id)
+      .populate("paidBy", "name email upiId")
+      .populate("splits.user", "name email upiId");
 
-    const created = await Expense.findById(settlement._id)
+    return res.status(201).json({
+      message: "Expense settled",
+      expense: toExpenseDto(created),
+    });
+  } catch (error) {
+    if (error instanceof SettlementError) {
+      return res.status(error.statusCode).json({ message: error.message, code: error.code });
+    }
+
+    return res.status(500).json({ message: "Failed to settle expense", error: error.message });
+  }
+});
+
+router.post("/:id/settle", async (req, res) => {
+  try {
+    const { toUserId, amount, notes } = req.body || {};
+    const createdSettlement = await runInTransaction(async (session) => {
+      return settleNetBalanceBetweenUsers({
+        groupId: req.params.id,
+        payerUserId: req.user._id,
+        payeeUserId: String(toUserId || "").trim(),
+        amount,
+        notes,
+        session,
+      });
+    });
+
+    const created = await Expense.findById(createdSettlement._id)
       .populate("paidBy", "name email upiId")
       .populate("splits.user", "name email upiId");
 
@@ -374,6 +402,9 @@ router.post("/:id/settle", async (req, res) => {
       expense: toExpenseDto(created),
     });
   } catch (error) {
+    if (error instanceof SettlementError) {
+      return res.status(error.statusCode).json({ message: error.message, code: error.code });
+    }
     return res.status(500).json({ message: "Failed to settle payment", error: error.message });
   }
 });
