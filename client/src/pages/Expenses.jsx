@@ -114,13 +114,28 @@ const Expenses = () => {
 
     try {
       setSettlingExpenseId(expense.id);
-      await authApiRequest(`/api/groups/${expense.group.id}/expenses/${expense.id}/settle`, {
-        method: "POST",
-      });
-      toast.success("Expense settled!");
-      await loadExpenses();
-      if (selectedExpense?.id === expense.id) {
-        setSelectedExpense(null);
+      const useCash = window.confirm(
+        "Settle via cash request? OK = send cash request to payer, Cancel = settle immediately via app.",
+      );
+      if (useCash) {
+        const myShare = getMyShare(expense);
+        await authApiRequest(`/api/settlements/${expense.group.id}/requests`, {
+          method: "POST",
+          body: JSON.stringify({
+            toUserId: expense.paidBy.id,
+            amount: myShare,
+            notes: `Cash settlement for ${expense.title}`,
+            expenseId: expense.id,
+          }),
+        });
+        toast.success("Cash settlement request sent to payer");
+      } else {
+        await authApiRequest(`/api/groups/${expense.group.id}/expenses/${expense.id}/settle`, {
+          method: "POST",
+        });
+        toast.success("Expense settled!");
+        await loadExpenses();
+        if (selectedExpense?.id === expense.id) setSelectedExpense(null);
       }
     } catch (err) {
       toast.error(err.message || "Failed to settle expense");

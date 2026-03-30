@@ -5,6 +5,7 @@ import { Group } from "../models/Group.js";
 import { Expense } from "../models/Expense.js";
 import { Notification } from "../models/Notification.js";
 import { buildMemberBalances, toExpenseDto, toGroupDto } from "../utils/finance.js";
+import { PendingSettlement } from "../models/PendingSettlement.js";
 import {
   runInTransaction,
   settleNetBalanceBetweenUsers,
@@ -229,9 +230,20 @@ router.get("/:id", async (req, res) => {
 
     const visibleExpenses = expenses.filter((expense) => expense.category !== "Settlement");
 
+    // Include pending cash settlement requests that are addressed to the current user
+    const pendingRequests = await PendingSettlement.find({ group: group._id, status: "pending", to: req.user._id })
+      .populate("from", "name");
+
     return res.json({
       group: toGroupDto(group, expenses, req.user._id),
       expenses: visibleExpenses.map(toExpenseDto),
+      pendingRequests: pendingRequests.map((r) => ({
+        id: r._id,
+        from: { id: r.from._id, name: r.from.name },
+        amount: r.amount,
+        notes: r.notes,
+        createdAt: r.createdAt,
+      })),
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to load group", error: error.message });
@@ -243,7 +255,7 @@ router.post("/:id/expenses", async (req, res) => {
     const group = await findGroupForUser(req.params.id, req.user._id);
     if (!group) return res.status(404).json({ message: "Group not found" });
 
-    const { title, amount, paidBy, date, category, notes, splitType = "equal", customSplits = {} } = req.body;
+    const { title, amount, date, category, notes, splitType = "equal", customSplits = {} } = req.body;
     const normalizedSplitType = String(splitType || "equal").trim().toLowerCase();
     const parsedDate = parseExpenseDate(date);
 
@@ -260,7 +272,9 @@ router.post("/:id/expenses", async (req, res) => {
     }
 
     const memberIds = group.members.map((member) => member.user._id.toString());
-    const paidById = paidBy || req.user._id.toString();
+    // Always treat the authenticated user as the payer when they add an expense.
+    // This prevents clients from incorrectly (or maliciously) setting another member as payer.
+    const paidById = req.user._id.toString();
 
     if (!memberIds.includes(paidById.toString())) {
       return res.status(400).json({ message: "Payer must be a group member." });
@@ -295,23 +309,21 @@ router.post("/:id/expenses", async (req, res) => {
     }
 
     const createdExpense = await runInTransaction(async (session) => {
-      const [expense] = await Expense.create(
-        [
-          {
-            group: group._id,
-            title: title.trim(),
-            amount: numericAmount,
-            paidBy: paidById,
-            date: parsedDate,
-            category: category || "Other",
-            notes: notes || "",
-            splitType: normalizedSplitType,
-            splits,
-            createdBy: req.user._id,
-          },
-        ],
-        { session },
-      );
+      const expenseDoc = new Expense({
+        group: group._id,
+        title: title.trim(),
+        amount: numericAmount,
+        paidBy: paidById,
+        date: parsedDate,
+        category: category || "Other",
+        notes: notes || "",
+        splitType: normalizedSplitType,
+        splits,
+        createdBy: req.user._id,
+      });
+
+      await expenseDoc.save({ session });
+      const expense = expenseDoc;
 
       const notifications = group.members
         .filter((member) => member.user._id.toString() !== req.user._id.toString())

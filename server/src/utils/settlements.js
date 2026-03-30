@@ -129,29 +129,27 @@ export async function settleSpecificExpenseForUser({
     throw new SettlementError(400, "This expense is already settled for you.", "EXPENSE_ALREADY_SETTLED");
   }
 
-  const [settlement] = await Expense.create(
-    [
+  const settlementDoc = new Expense({
+    group: group._id,
+    title: `Settlement for ${expense.title}`,
+    amount: settlementAmount,
+    paidBy: userId,
+    date: new Date(),
+    category: "Settlement",
+    notes: appendPaymentReference(notes || `Direct payment for ${expense.title}`, paymentReference),
+    splitType: "custom",
+    splits: [
       {
-        group: group._id,
-        title: `Settlement for ${expense.title}`,
+        user: expense.paidBy._id,
         amount: settlementAmount,
-        paidBy: userId,
-        date: new Date(),
-        category: "Settlement",
-        notes: appendPaymentReference(notes || `Direct payment for ${expense.title}`, paymentReference),
-        splitType: "custom",
-        splits: [
-          {
-            user: expense.paidBy._id,
-            amount: settlementAmount,
-            settled: true,
-          },
-        ],
-        createdBy: userId,
+        settled: true,
       },
     ],
-    { session },
-  );
+    createdBy: userId,
+  });
+
+  await settlementDoc.save({ session });
+  const settlement = settlementDoc;
 
   await Notification.insertMany(
     [
@@ -255,29 +253,27 @@ export async function settleNetBalanceBetweenUsers({
     );
   }
 
-  const [settlement] = await Expense.create(
-    [
+  const settlementDoc = new Expense({
+    group: group._id,
+    title: "Settlement",
+    amount: numericAmount,
+    paidBy: payerUserId,
+    date: new Date(),
+    category: "Settlement",
+    notes: appendPaymentReference(String(notes || "").trim() || "Settlement payment", paymentReference),
+    splitType: "custom",
+    splits: [
       {
-        group: group._id,
-        title: "Settlement",
+        user: recipientMember.user._id,
         amount: numericAmount,
-        paidBy: payerUserId,
-        date: new Date(),
-        category: "Settlement",
-        notes: appendPaymentReference(String(notes || "").trim() || "Settlement payment", paymentReference),
-        splitType: "custom",
-        splits: [
-          {
-            user: recipientMember.user._id,
-            amount: numericAmount,
-            settled: true,
-          },
-        ],
-        createdBy: payerUserId,
+        settled: true,
       },
     ],
-    { session },
-  );
+    createdBy: payerUserId,
+  });
+
+  await settlementDoc.save({ session });
+  const settlement = settlementDoc;
 
   await Notification.insertMany(
     [

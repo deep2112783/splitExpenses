@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
 import groupRoutes from "./routes/groups.js";
 import notificationRoutes from "./routes/notifications.js";
+import settlementRoutes from "./routes/settlements.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import { connectDatabase } from "./config/db.js";
 
@@ -35,6 +36,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/settlements", settlementRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 
 app.listen(port, () => {

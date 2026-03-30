@@ -238,7 +238,9 @@ const Dashboard = () => {
                     const isSettlement = expense.category === "Settlement";
                     const outstandingToPayer = getOutstandingToPayer(expense);
                     const canPayThisExpense = canPaySpecificExpense(expense);
-                    const canSettle = canPayThisExpense || outstandingToPayer > 0;
+                    // show settle only for non-settlement expenses and when the user's share
+                    // isn't already settled and there's either an expense-specific share or a net outstanding
+                    const canSettle = !isSettlement && !settled && (canPayThisExpense || outstandingToPayer > 0);
 
                     return (
                       <div

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Plus, Copy, Users, ArrowRight, Wallet, Check } from "lucide-react";
+import { Plus, Copy, Users, ArrowRight, Wallet, Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -40,11 +40,38 @@ const GroupDetail = () => {
 
   const [group, setGroup] = useState(null);
   const [expenses, setExpenses] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedExpense, setSelectedExpense] = useState(null);
   const [settleOpen, setSettleOpen] = useState(false);
   const [settleTarget, setSettleTarget] = useState(null);
+  const [settleMethod, setSettleMethod] = useState("upi");
+  const [settleForExpense, setSettleForExpense] = useState(null);
+  const [settleNotes, setSettleNotes] = useState("");
   const [settling, setSettling] = useState(false);
+  const [disabledTargets, setDisabledTargets] = useState([]);
+  const [disabledExpenses, setDisabledExpenses] = useState([]);
+
+  useEffect(() => {
+    if (!settleOpen) {
+      if (settleTarget?.userId) unmarkTargetDisabled(settleTarget.userId);
+      if (settleForExpense) unmarkExpenseDisabled(settleForExpense);
+      setSettleForExpense(null);
+      setSettleTarget(null);
+      setSettleNotes("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleOpen]);
+
+  function unmarkTargetDisabled(id) {
+    if (!id) return;
+    setDisabledTargets((prev) => prev.filter((x) => x !== id));
+  }
+
+  function unmarkExpenseDisabled(id) {
+    if (!id) return;
+    setDisabledExpenses((prev) => prev.filter((x) => x !== id));
+  }
 
   useEffect(() => {
     async function loadGroupDetail() {
@@ -53,6 +80,7 @@ const GroupDetail = () => {
         const data = await authApiRequest(`/api/groups/${id}`);
         setGroup(data.group);
         setExpenses((data.expenses || []).filter((expense) => expense.category !== "Settlement"));
+        setPendingRequests(data.pendingRequests || []);
       } catch (err) {
         toast.error(err.message || "Failed to load group");
         setGroup(null);
@@ -75,6 +103,8 @@ const GroupDetail = () => {
       if (!payerId) continue;
 
       for (const split of expense.splits || []) {
+        // ignore already-settled splits when calculating outstanding amounts
+        if (split.settled) continue;
         const debtorId = split.user?.id;
         if (!debtorId || debtorId === payerId) continue;
 
@@ -146,34 +176,52 @@ const GroupDetail = () => {
   }
 
   function handleSettle(member, amount) {
+    // disable this target to avoid duplicate clicks
+    setDisabledTargets((prev) => (prev.includes(member.user.id) ? prev : [...prev, member.user.id]));
     setSettleTarget({
       userId: member.user.id,
       name: member.user.name,
       amount,
     });
+    setSettleMethod("upi");
+    setSettleNotes("");
+    setSettleForExpense(null);
     setSettleOpen(true);
   }
 
   async function confirmMemberSettlement() {
     if (!settleTarget) return;
+    const targetId = settleTarget?.userId;
+    const expenseId = settleForExpense;
 
     try {
       setSettling(true);
-      await authApiRequest(`/api/groups/${id}/settle`, {
+      // Always create a pending settlement request; recipient must accept to finalize
+      await authApiRequest(`/api/settlements/${id}/requests`, {
         method: "POST",
         body: JSON.stringify({
           toUserId: settleTarget.userId,
           amount: settleTarget.amount,
-          notes: `Settled with ${settleTarget.name}`,
+          notes: settleNotes || `Settlement requested with ${settleTarget.name}`,
+          method: settleMethod,
+          expenseId: settleForExpense || undefined,
         }),
       });
-      toast.success(`Settlement recorded with ${settleTarget.name}`);
+      toast.success(`Settlement request sent to ${settleTarget.name}`);
       setSettleOpen(false);
-      await refreshGroup();
+      setSettleForExpense(null);
+      setSettleNotes("");
     } catch (err) {
       toast.error(err.message || "Failed to record settlement");
     } finally {
       setSettling(false);
+      // re-enable target/expense after request completes using captured ids
+      if (targetId) {
+        setDisabledTargets((prev) => prev.filter((x) => x !== targetId));
+      }
+      if (expenseId) {
+        setDisabledExpenses((prev) => prev.filter((x) => x !== expenseId));
+      }
     }
   }
 
@@ -181,15 +229,35 @@ const GroupDetail = () => {
     const data = await authApiRequest(`/api/groups/${id}`);
     setGroup(data.group);
     setExpenses((data.expenses || []).filter((expense) => expense.category !== "Settlement"));
+    setPendingRequests(data.pendingRequests || []);
+  }
+
+  async function acceptPendingRequest(requestId) {
+    try {
+      setSettling(true);
+      await authApiRequest(`/api/settlements/${id}/requests/${requestId}/accept`, { method: "POST" });
+      toast.success("Settlement accepted");
+      await refreshGroup();
+    } catch (err) {
+      toast.error(err.message || "Failed to accept settlement");
+    } finally {
+      setSettling(false);
+    }
   }
 
   async function paySpecificExpense(expense) {
-    await authApiRequest(`/api/groups/${id}/expenses/${expense.id}/settle`, {
-      method: "POST",
+    // open settle modal pre-filled for this expense so user can choose cash (request) or online (immediate)
+    // disable this expense to prevent duplicate clicks
+    setDisabledExpenses((prev) => (prev.includes(expense.id) ? prev : [...prev, expense.id]));
+    setSettleForExpense(expense.id);
+    setSettleTarget({
+      userId: expense.paidBy?.id,
+      name: expense.paidBy?.name,
+      amount: getMyShare(expense),
     });
-    toast.success("Expense settled!");
-    setSelectedExpense(null);
-    await refreshGroup();
+    setSettleMethod("upi");
+    setSettleNotes("");
+    setSettleOpen(true);
   }
 
   async function payNetForExpensePayer(expense) {
@@ -199,17 +267,14 @@ const GroupDetail = () => {
       return;
     }
 
-    await authApiRequest(`/api/groups/${id}/settle`, {
-      method: "POST",
-      body: JSON.stringify({
-        toUserId: expense.paidBy?.id,
-        amount,
-        notes: `Settled balance related to ${expense.title}`,
-      }),
-    });
-    toast.success("Settlement recorded!");
-    setSelectedExpense(null);
-    await refreshGroup();
+    // open settle modal instead of immediate settlement so user can choose method and note
+    // disable target to avoid duplicates
+    if (expense.paidBy?.id) setDisabledTargets((prev) => (prev.includes(expense.paidBy.id) ? prev : [...prev, expense.paidBy.id]));
+    setSettleForExpense(null);
+    setSettleTarget({ userId: expense.paidBy?.id, name: expense.paidBy?.name, amount });
+    setSettleMethod("upi");
+    setSettleNotes("");
+    setSettleOpen(true);
   }
 
   return (
@@ -261,6 +326,26 @@ const GroupDetail = () => {
             <h2 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
               <Users className="w-5 h-5" /> Members
             </h2>
+            {pendingRequests.length > 0 && (
+              <div className="mb-4">
+                <p className="text-sm font-semibold mb-2">Incoming cash settlement requests</p>
+                <div className="space-y-2">
+                  {pendingRequests.map((r) => (
+                    <div key={r.id} className="flex items-center justify-between p-3 rounded-lg bg-background/40">
+                      <div>
+                        <p className="font-medium">{r.from.name} wants to pay you</p>
+                        <p className="text-xs text-muted-foreground">{formatCurrency(r.amount)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => acceptPendingRequest(r.id)} disabled={settling}>
+                          <Check className="w-4 h-4 mr-1" /> Accept
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="space-y-3">
               {group.members.map((member) => (
                 <div key={member.user.id} className="flex items-center justify-between">
@@ -285,9 +370,16 @@ const GroupDetail = () => {
                     {settleTargets.has(member.user.id) && (
                       <button
                         onClick={() => handleSettle(member, settleTargets.get(member.user.id))}
-                        className="text-xs text-primary hover:underline"
+                        disabled={disabledTargets.includes(member.user.id)}
+                        className={`text-xs inline-flex items-center gap-2 ${disabledTargets.includes(member.user.id) ? "text-muted-foreground" : "text-primary hover:underline"}`}
                       >
-                        Pay {formatCurrency(settleTargets.get(member.user.id))}
+                        {disabledTargets.includes(member.user.id) ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin" /> Processing
+                          </>
+                        ) : (
+                          <>Pay {formatCurrency(settleTargets.get(member.user.id))}</>
+                        )}
                       </button>
                     )}
                   </div>
@@ -422,7 +514,7 @@ const GroupDetail = () => {
                 <div className="flex flex-wrap gap-2 pt-2">
                   <Button
                     variant="outline"
-                    disabled={!canPaySpecificExpense(selectedExpense)}
+                    disabled={!canPaySpecificExpense(selectedExpense) || disabledExpenses.includes(selectedExpense.id)}
                     onClick={async () => {
                       try {
                         await paySpecificExpense(selectedExpense);
@@ -431,10 +523,14 @@ const GroupDetail = () => {
                       }
                     }}
                   >
-                    Settle This Expense
+                    {disabledExpenses.includes(selectedExpense.id) ? (
+                      <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
+                    ) : (
+                      "Settle This Expense"
+                    )}
                   </Button>
                   <Button
-                    disabled={getOutstandingToPayer(selectedExpense) <= 0}
+                    disabled={getOutstandingToPayer(selectedExpense) <= 0 || disabledTargets.includes(selectedExpense.paidBy?.id)}
                     onClick={async () => {
                       try {
                         await payNetForExpensePayer(selectedExpense);
@@ -443,7 +539,11 @@ const GroupDetail = () => {
                       }
                     }}
                   >
-                    Settle Net Amount
+                    {disabledTargets.includes(selectedExpense.paidBy?.id) ? (
+                      <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
+                    ) : (
+                      "Settle Net Amount"
+                    )}
                   </Button>
                 </div>
               )}
@@ -468,6 +568,52 @@ const GroupDetail = () => {
                 <p className="text-3xl font-display font-bold text-owe mt-2">
                   {formatCurrency(settleTarget.amount)}
                 </p>
+              </div>
+              <div className="flex items-center justify-center gap-3">
+                <label className={`px-3 py-1 rounded-xl cursor-pointer ${settleMethod === "upi" ? "bg-secondary text-muted-foreground" : "bg-background"}`}>
+                  <input
+                    type="radio"
+                    name="settleMethod"
+                    value="upi"
+                    checked={settleMethod === "upi"}
+                    onChange={() => setSettleMethod("upi")}
+                    className="sr-only"
+                  />
+                  UPI
+                </label>
+                <label className={`px-3 py-1 rounded-xl cursor-pointer ${settleMethod === "cash" ? "bg-secondary text-muted-foreground" : "bg-background"}`}>
+                  <input
+                    type="radio"
+                    name="settleMethod"
+                    value="cash"
+                    checked={settleMethod === "cash"}
+                    onChange={() => setSettleMethod("cash")}
+                    className="sr-only"
+                  />
+                  Cash
+                </label>
+                <label className={`px-3 py-1 rounded-xl cursor-pointer ${settleMethod === "other" ? "bg-secondary text-muted-foreground" : "bg-background"}`}>
+                  <input
+                    type="radio"
+                    name="settleMethod"
+                    value="other"
+                    checked={settleMethod === "other"}
+                    onChange={() => setSettleMethod("other")}
+                    className="sr-only"
+                  />
+                  Other
+                </label>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground">Note (optional)</label>
+                <textarea
+                  value={settleNotes}
+                  onChange={(e) => setSettleNotes(e.target.value)}
+                  rows={3}
+                  className="w-full mt-2 p-2 rounded-lg border border-border bg-background text-sm"
+                  placeholder="Add a note or payment reference (optional)"
+                />
               </div>
 
               <Button

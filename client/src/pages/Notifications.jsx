@@ -21,7 +21,6 @@ const iconMap = {
 const Notifications = () => {
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
-  const [selectedIds, setSelectedIds] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isMutating, setIsMutating] = useState(false);
   const { refreshUnreadCount } = useNotificationsCount();
@@ -44,26 +43,21 @@ const Notifications = () => {
   async function loadNotifications() {
     const cached = readCachedAuthResponse("/api/notifications");
     if (cached?.notifications) {
-      setNotifications(cached.notifications);
+      setNotifications((cached.notifications || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
       setIsLoading(false);
     }
 
     try {
       const data = await authApiRequest("/api/notifications");
-      setNotifications(data.notifications || []);
+      setNotifications((data.notifications || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
       writeCachedAuthResponse("/api/notifications", data);
       setSelectedIds([]);
     } catch (_err) {
-      if (!cached) toast.error("Failed to load notifications");
+      const msg = _err?.message || "Failed to load notifications";
+      if (!cached) toast.error(msg);
     } finally {
       setIsLoading(false);
     }
-  }
-
-  function toggleSelection(id) {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id],
-    );
   }
 
   async function handleOpenNotification(notification) {
@@ -89,66 +83,31 @@ const Notifications = () => {
     navigate("/notifications");
   }
 
-  async function markSelectedRead() {
-    if (selectedIds.length === 0) {
-      toast.error("Select notifications first");
-      return;
-    }
-
-    try {
-      setIsMutating(true);
-      await authApiRequest("/api/notifications/read-selected", {
-        method: "PATCH",
-        body: JSON.stringify({ ids: selectedIds }),
-      });
-      setNotifications((prev) =>
-        prev.map((n) => (selectedIds.includes(n.id) ? { ...n, read: true } : n)),
-      );
-      setSelectedIds([]);
-      refreshUnreadCount();
-      toast.success("Selected notifications marked as read");
-    } catch (_err) {
-      toast.error("Failed to mark selected notifications");
-    } finally {
-      setIsMutating(false);
-    }
-  }
-
   async function markAllAsRead() {
     try {
       setIsMutating(true);
       await authApiRequest("/api/notifications/read-all", { method: "PATCH" });
-      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
       setSelectedIds([]);
       refreshUnreadCount();
       toast.success("All notifications marked as read");
     } catch (_err) {
-      toast.error("Failed to mark all as read");
+      toast.error(_err?.message || "Failed to mark all as read");
     } finally {
       setIsMutating(false);
     }
   }
 
   async function deleteSelected() {
-    if (selectedIds.length === 0) {
-      toast.error("Select notifications first");
-      return;
-    }
-
-    if (!window.confirm(`Delete ${selectedIds.length} selected notifications?`)) return;
-
+    // keep API for clearing all notifications
     try {
       setIsMutating(true);
-      await authApiRequest("/api/notifications/selected", {
-        method: "DELETE",
-        body: JSON.stringify({ ids: selectedIds }),
-      });
-      setNotifications((prev) => prev.filter((n) => !selectedIds.includes(n.id)));
-      setSelectedIds([]);
+      await authApiRequest("/api/notifications/clear", { method: "DELETE" });
+      setNotifications([]);
       refreshUnreadCount();
-      toast.success("Selected notifications deleted");
+      toast.success("Notifications cleared");
     } catch (_err) {
-      toast.error("Failed to delete selected notifications");
+      toast.error(_err?.message || "Failed to clear notifications");
     } finally {
       setIsMutating(false);
     }
@@ -180,15 +139,6 @@ const Notifications = () => {
                 size="sm"
                 variant="outline"
                 className="rounded-xl"
-                onClick={markSelectedRead}
-                disabled={isMutating || selectedIds.length === 0}
-              >
-                Mark read
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="rounded-xl"
                 onClick={markAllAsRead}
                 disabled={isMutating}
               >
@@ -199,9 +149,9 @@ const Notifications = () => {
                 variant="outline"
                 className="rounded-xl"
                 onClick={deleteSelected}
-                disabled={isMutating || selectedIds.length === 0}
+                disabled={isMutating}
               >
-                Delete
+                Clear All
               </Button>
             </div>
           )}
@@ -214,12 +164,10 @@ const Notifications = () => {
           </div>
         ) : (
           <>
-            <p className="text-xs text-muted-foreground px-1">{selectedIds.length} selected</p>
-
             <div className="space-y-3">
               {notifications.map((n, i) => {
                 const Icon = iconMap[n.type] || Bell;
-                const selected = selectedIds.includes(n.id);
+                const read = Boolean(n.read);
                 return (
                   <motion.div
                     key={n.id}
@@ -227,18 +175,9 @@ const Notifications = () => {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: i * 0.04 }}
                     className={`flex items-start gap-3 p-4 rounded-2xl border transition-colors ${
-                      n.read ? "bg-card border-border" : "bg-primary/5 border-primary/20"
-                    } ${selected ? "ring-1 ring-primary/40" : ""}`}
+                      read ? "bg-card border-border" : "bg-primary/5 border-primary/20"
+                    }`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => toggleSelection(n.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="mt-3 h-4 w-4 shrink-0 rounded border-border"
-                      aria-label={`Select notification: ${n.message}`}
-                    />
-
                     <div
                       role="button"
                       tabIndex={0}
@@ -252,15 +191,15 @@ const Notifications = () => {
                       className="flex items-start gap-3 flex-1 min-w-0 cursor-pointer"
                     >
                       <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                        n.read ? "bg-secondary" : "bg-primary/10"
-                      }`}
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                          read ? "bg-secondary" : "bg-primary/10"
+                        }`}
                       >
-                        <Icon className={`w-5 h-5 ${n.read ? "text-muted-foreground" : "text-primary"}`} />
+                        <Icon className={`w-5 h-5 ${read ? "text-muted-foreground" : "text-primary"}`} />
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <p className={`text-sm ${n.read ? "text-muted-foreground" : "font-medium"}`}>{n.message}</p>
+                        <p className={`text-sm ${read ? "text-muted-foreground" : "font-medium"}`}>{n.message}</p>
                         <p className="text-xs text-muted-foreground mt-1">
                           {new Date(n.createdAt).toLocaleDateString("en-IN", {
                             day: "numeric",

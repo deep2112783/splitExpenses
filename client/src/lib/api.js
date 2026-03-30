@@ -15,9 +15,21 @@ export async function apiRequest(path, options = {}) {
   } catch (_error) {
     payload = null;
   }
-
   if (!response.ok) {
-    throw new Error(payload?.message || "Request failed");
+    // try to include server-provided message or raw body for better debugging
+    let bodyText = null;
+    if (!payload) {
+      try {
+        bodyText = await response.text();
+      } catch (_e) {
+        bodyText = null;
+      }
+    }
+
+    const message = payload?.message || bodyText || response.statusText || "Request failed";
+    const err = new Error(message);
+    err.status = response.status;
+    throw err;
   }
 
   const method = String(options.method || "GET").toUpperCase();
