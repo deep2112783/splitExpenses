@@ -82,35 +82,7 @@ npm run dev
 
 Vite will start the dev server and print the local URL (e.g. `http://localhost:8080` or another available port). The frontend proxies `/api` to the server port configured in `client/vite.config.js` (default target `http://localhost:5001`).
 
-## Notes and tips
 
-- The client stores a small local cache of outgoing pending settlement requests to prevent duplicate cash requests from multiple UI sections (Groups / Expenses / Balances). These are recorded in `sessionStorage` and cleared when the server-accepted events are observed.
-- If the dev client shows the wrong origin or port, check `client/vite.config.js` (server port and proxy) and `server/.env` (CLIENT_ORIGIN).
-- To change the displayed favicon or site meta, edit `client/index.html`.
-
-## Build and deploy
-
-1. Build client
-
-```bash
-cd client
-npm run build
-```
-
-2. Serve built client (your choice of static host) and run the server in production mode (`node src/server.js`) with `server/.env` configured for production.
-
-## Contributing
-
-PRs, issues and feature requests are welcome. Please open issues for bugs or feature ideas and create small, focused pull requests.
-
-## License
-
-Add your license information here.
-# Welcome to your SplitSmart project
-
-## Project info
-
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 
 
 
