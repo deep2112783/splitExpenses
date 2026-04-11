@@ -23,6 +23,7 @@ const Notifications = () => {
   const [notifications, setNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isMutating, setIsMutating] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
   const { refreshUnreadCount } = useNotificationsCount();
 
   useEffect(() => {

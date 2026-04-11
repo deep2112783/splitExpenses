@@ -186,6 +186,7 @@ const Groups = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
+                className="relative"
               >
                 <Link
                   to={`/groups/${group.id}`}
@@ -215,6 +216,13 @@ const Groups = () => {
                     <p className="text-xs text-muted-foreground">Total: {formatCurrency(group.totalExpenses)}</p>
                   </div>
                 </Link>
+                {group.status === "active" && group.myBalance < 0 && (
+                  <div className="absolute top-3 right-3">
+                    <Link to={`/groups/${group.id}#members`} className="text-xs text-primary hover:underline bg-white/0 px-2 py-1 rounded">
+                      Settle
+                    </Link>
+                  </div>
+                )}
               </motion.div>
             ))}
           </div>

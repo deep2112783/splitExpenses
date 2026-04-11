@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import AppLayout from "@/components/layout/AppLayout";
 import { formatCurrency, getInitials } from "@/lib/mock-data";
 import { authApiRequest, getStoredUser, readCachedAuthResponse, writeCachedAuthResponse } from "@/lib/api";
+import { getLocalPendingRequests } from "@/lib/api";
 import { toast } from "sonner";
 
 const Balances = () => {
@@ -177,9 +178,13 @@ const Balances = () => {
                   </div>
                   <div className="space-y-3">
                     {paySettlements.length === 0 ? (
-                      <div className="text-sm text-muted-foreground py-4">No pending payments</div>
-                    ) : (
-                      paySettlements.map((s, i) => (
+                          <div className="text-sm text-muted-foreground py-4">No pending payments</div>
+                        ) : (
+                          (() => {
+                            const localPending = getLocalPendingRequests();
+                            return paySettlements.map((s, i) => {
+                              const isLocallyPending = localPending.some((p) => String(p.groupId) === String(s.groupId) && String(p.to) === String(s.user.id));
+                              return (
                         <motion.div
                           key={`${s.groupId}-${s.user.id}-pay`}
                           initial={{ opacity: 0, x: -10 }}
@@ -187,7 +192,7 @@ const Balances = () => {
                           transition={{ delay: 0.05 * i }}
                           className="flex items-center justify-between p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors"
                         >
-                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
                               {getInitials(s.user.name)}
                             </div>
@@ -198,16 +203,22 @@ const Balances = () => {
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="text-sm font-bold text-owe">{formatCurrency(s.amount)}</span>
-                            <Button
-                              size="sm"
-                              className="bg-gradient-primary text-primary-foreground rounded-xl h-8 px-3 text-xs shadow-glow"
-                              onClick={() => handleSettle(s)}
-                            >
-                              <Wallet className="w-3.5 h-3.5 mr-1" /> Pay
-                            </Button>
+                            {isLocallyPending ? (
+                              <div className="text-xs text-muted-foreground">Pending</div>
+                            ) : (
+                              <Button
+                                size="sm"
+                                className="bg-gradient-primary text-primary-foreground rounded-xl h-8 px-3 text-xs shadow-glow"
+                                onClick={() => handleSettle(s)}
+                              >
+                                <Wallet className="w-3.5 h-3.5 mr-1" /> Pay
+                              </Button>
+                            )}
                           </div>
                         </motion.div>
-                      ))
+                        );
+                        });
+                      })()
                     )}
                   </div>
                 </motion.div>

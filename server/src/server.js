@@ -38,9 +38,20 @@ app.use("/api/groups", groupRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/settlements", settlementRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+// debug route is optional in development; skip if not present
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
+});
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`Port ${port} is already in use. Another process is listening on this port.`);
+    console.error("Kill the process using the port or set a different PORT in server/.env and try again.");
+    process.exit(1);
+  }
+  console.error("Server error:", err && err.stack ? err.stack : err);
+  process.exit(1);
 });
 
 async function connectWithRetry() {

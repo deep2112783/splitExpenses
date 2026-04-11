@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import AppLayout from "@/components/layout/AppLayout";
 import { authApiRequest, getStoredUser } from "@/lib/api";
+import { addLocalPendingRequest, getLocalPendingRequests, removeLocalPendingRequest } from "@/lib/api";
 import { categoryIcons, expenseCategoryIcons, formatCurrency, getInitials } from "@/lib/mock-data";
 import { toast } from "sonner";
 
@@ -44,6 +45,8 @@ const GroupDetail = () => {
   const [loading, setLoading] = useState(true);
   const [selectedExpense, setSelectedExpense] = useState(null);
   const [settleOpen, setSettleOpen] = useState(false);
+  const [settleChoiceOpen, setSettleChoiceOpen] = useState(false);
+  const [settleChoiceTarget, setSettleChoiceTarget] = useState(null);
   const [settleTarget, setSettleTarget] = useState(null);
   const [settleMethod, setSettleMethod] = useState("upi");
   const [settleForExpense, setSettleForExpense] = useState(null);
@@ -131,6 +134,32 @@ const GroupDetail = () => {
     return targets;
   }, [currentUserId, expenses, group?.members]);
 
+  // local pending requests to suppress duplicate settle actions
+  const localPendingMap = useMemo(() => {
+    try {
+      const list = getLocalPendingRequests() || [];
+      const map = new Map();
+      for (const p of list) {
+        if (String(p.groupId) !== String(id)) continue;
+        if (String(p.from) === String(currentUserId)) {
+          map.set(String(p.to), p);
+        }
+      }
+      return map;
+    } catch (_e) {
+      return new Map();
+    }
+  }, [id, currentUserId]);
+
+  function hasLocalPendingForExpense(expense) {
+    try {
+      const list = getLocalPendingRequests() || [];
+      return list.some((p) => String(p.groupId) === String(id) && (p.expenseId === expense.id || String(p.to) === String(expense.paidBy?.id)));
+    } catch (_e) {
+      return false;
+    }
+  }
+
   if (loading) {
     return (
       <AppLayout>
@@ -189,6 +218,12 @@ const GroupDetail = () => {
     setSettleOpen(true);
   }
 
+  // open a choice dialog that lets user pick net vs specific expense
+  function handleSettleChoice(member, amount) {
+    setSettleChoiceTarget({ member, amount });
+    setSettleChoiceOpen(true);
+  }
+
   async function confirmMemberSettlement() {
     if (!settleTarget) return;
     const targetId = settleTarget?.userId;
@@ -197,7 +232,7 @@ const GroupDetail = () => {
     try {
       setSettling(true);
       // Always create a pending settlement request; recipient must accept to finalize
-      await authApiRequest(`/api/settlements/${id}/requests`, {
+      const resp = await authApiRequest(`/api/settlements/${id}/requests`, {
         method: "POST",
         body: JSON.stringify({
           toUserId: settleTarget.userId,
@@ -208,6 +243,18 @@ const GroupDetail = () => {
         }),
       });
       toast.success(`Settlement request sent to ${settleTarget.name}`);
+      // store a local pending request entry so other pages can reflect pending state
+      try {
+        addLocalPendingRequest({
+          requestId: resp?.requestId || null,
+          groupId: id,
+          from: getStoredUser()?.id,
+          to: settleTarget.userId,
+          expenseId: settleForExpense || null,
+          amount: settleTarget.amount,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (_e) {}
       setSettleOpen(false);
       setSettleForExpense(null);
       setSettleNotes("");
@@ -238,6 +285,10 @@ const GroupDetail = () => {
       await authApiRequest(`/api/settlements/${id}/requests/${requestId}/accept`, { method: "POST" });
       toast.success("Settlement accepted");
       await refreshGroup();
+      // remove any matching local pending entries for this group
+      try {
+        removeLocalPendingRequest((p) => String(p.groupId) === String(id));
+      } catch (_e) {}
     } catch (err) {
       toast.error(err.message || "Failed to accept settlement");
     } finally {
@@ -323,9 +374,16 @@ const GroupDetail = () => {
 
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="bg-card rounded-2xl border border-border p-5">
-            <h2 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
-              <Users className="w-5 h-5" /> Members
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display font-semibold text-lg flex items-center gap-2">
+                <Users className="w-5 h-5" /> Members
+              </h2>
+              <div>
+                <Button size="sm" variant="outline" className="rounded-xl" onClick={() => { setSettleChoiceTarget(null); setSettleChoiceOpen(true); }}>
+                  Settle
+                </Button>
+              </div>
+            </div>
             {pendingRequests.length > 0 && (
               <div className="mb-4">
                 <p className="text-sm font-semibold mb-2">Incoming cash settlement requests</p>
@@ -367,9 +425,9 @@ const GroupDetail = () => {
                       {member.balance >= 0 ? "+" : ""}
                       {formatCurrency(member.balance)}
                     </p>
-                    {settleTargets.has(member.user.id) && (
+                    {settleTargets.has(member.user.id) && !localPendingMap.has(String(member.user.id)) && (
                       <button
-                        onClick={() => handleSettle(member, settleTargets.get(member.user.id))}
+                        onClick={() => handleSettleChoice(member, settleTargets.get(member.user.id))}
                         disabled={disabledTargets.includes(member.user.id)}
                         className={`text-xs inline-flex items-center gap-2 ${disabledTargets.includes(member.user.id) ? "text-muted-foreground" : "text-primary hover:underline"}`}
                       >
@@ -381,6 +439,9 @@ const GroupDetail = () => {
                           <>Pay {formatCurrency(settleTargets.get(member.user.id))}</>
                         )}
                       </button>
+                    )}
+                    {localPendingMap.has(String(member.user.id)) && (
+                      <div className="text-xs text-muted-foreground">Pending</div>
                     )}
                   </div>
                 </div>
@@ -512,39 +573,45 @@ const GroupDetail = () => {
 
               {(canPaySpecificExpense(selectedExpense) || getOutstandingToPayer(selectedExpense) > 0) && (
                 <div className="flex flex-wrap gap-2 pt-2">
-                  <Button
-                    variant="outline"
-                    disabled={!canPaySpecificExpense(selectedExpense) || disabledExpenses.includes(selectedExpense.id)}
-                    onClick={async () => {
-                      try {
-                        await paySpecificExpense(selectedExpense);
-                      } catch (err) {
-                        toast.error(err.message || "Failed to settle this expense");
-                      }
-                    }}
-                  >
-                    {disabledExpenses.includes(selectedExpense.id) ? (
-                      <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
-                    ) : (
-                      "Settle This Expense"
-                    )}
-                  </Button>
-                  <Button
-                    disabled={getOutstandingToPayer(selectedExpense) <= 0 || disabledTargets.includes(selectedExpense.paidBy?.id)}
-                    onClick={async () => {
-                      try {
-                        await payNetForExpensePayer(selectedExpense);
-                      } catch (err) {
-                        toast.error(err.message || "Failed to settle net amount");
-                      }
-                    }}
-                  >
-                    {disabledTargets.includes(selectedExpense.paidBy?.id) ? (
-                      <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
-                    ) : (
-                      "Settle Net Amount"
-                    )}
-                  </Button>
+                  {hasLocalPendingForExpense(selectedExpense) ? (
+                    <div className="text-sm text-muted-foreground">Pending</div>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        disabled={!canPaySpecificExpense(selectedExpense) || disabledExpenses.includes(selectedExpense.id)}
+                        onClick={async () => {
+                          try {
+                            await paySpecificExpense(selectedExpense);
+                          } catch (err) {
+                            toast.error(err.message || "Failed to settle this expense");
+                          }
+                        }}
+                      >
+                        {disabledExpenses.includes(selectedExpense.id) ? (
+                          <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
+                        ) : (
+                          "Settle This Expense"
+                        )}
+                      </Button>
+                      <Button
+                        disabled={getOutstandingToPayer(selectedExpense) <= 0 || disabledTargets.includes(selectedExpense.paidBy?.id)}
+                        onClick={async () => {
+                          try {
+                            await payNetForExpensePayer(selectedExpense);
+                          } catch (err) {
+                            toast.error(err.message || "Failed to settle net amount");
+                          }
+                        }}
+                      >
+                        {disabledTargets.includes(selectedExpense.paidBy?.id) ? (
+                          <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing</span>
+                        ) : (
+                          "Settle Net Amount"
+                        )}
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -631,6 +698,118 @@ const GroupDetail = () => {
               >
                 Cancel
               </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Choice dialog: net vs specific expense */}
+      <Dialog open={settleChoiceOpen} onOpenChange={setSettleChoiceOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display">Settle With Member</DialogTitle>
+            <DialogDescription className="sr-only">
+              Choose between settling net balance or a specific expense.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!settleChoiceTarget && (
+            <div className="space-y-4">
+              <div className="text-center py-2">
+                <p className="text-muted-foreground">Settle with a member</p>
+                <p className="text-sm text-muted-foreground">Choose a member or view outstanding expenses</p>
+              </div>
+
+              <div className="space-y-2 max-h-72 overflow-auto">
+                {Array.from(settleTargets.entries()).length === 0 && (
+                  <p className="text-xs text-muted-foreground text-center">No outstanding balances to settle</p>
+                )}
+                {Array.from(settleTargets.entries()).map(([memberId, amount]) => {
+                  const member = (group.members || []).find((m) => m.user.id === memberId);
+                  if (!member) return null;
+                  return (
+                    <div key={memberId} className="flex items-center justify-between p-2 rounded-lg bg-background/40">
+                      <div>
+                        <p className="font-medium">{member.user.name}</p>
+                        <p className="text-xs text-muted-foreground">{formatCurrency(amount)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => { handleSettle(member, amount); setSettleChoiceOpen(false); }}>
+                          Settle Net
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setSettleChoiceTarget({ member, amount })}>
+                          View
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <Button variant="outline" className="w-full rounded-xl" onClick={() => setSettleChoiceOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+
+          {settleChoiceTarget && (
+            <div className="space-y-4">
+              <div className="text-center py-4">
+                <p className="text-muted-foreground">{settleChoiceTarget.member.user.name}</p>
+                <p className="text-3xl font-display font-bold text-owe mt-2">{formatCurrency(settleChoiceTarget.amount)}</p>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Button
+                  onClick={() => {
+                    // settle net balance
+                    handleSettle(settleChoiceTarget.member, settleChoiceTarget.amount);
+                    setSettleChoiceOpen(false);
+                  }}
+                  className="w-full bg-gradient-primary text-primary-foreground rounded-xl h-11 shadow-glow"
+                >
+                  Settle Net Balance
+                </Button>
+
+                <div className="rounded-xl border border-border/60 bg-background/40 p-3">
+                  <p className="text-sm font-medium mb-2">Outstanding expenses with {settleChoiceTarget.member.user.name}</p>
+                  <div className="space-y-2 max-h-56 overflow-auto">
+                    {expenses
+                      .filter((e) => e.paidBy?.id === settleChoiceTarget.member.user.id)
+                      .filter((e) => {
+                        const mySplit = (e.splits || []).find((s) => s.user?.id === currentUserId);
+                        return mySplit && !mySplit.settled && Number(mySplit.amount) > 0;
+                      })
+                      .map((e) => (
+                        <div key={e.id} className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-sm">{e.title}</p>
+                            <p className="text-xs text-muted-foreground">{formatCurrency(getMyShare(e))} · {formatDateOnly(e.date)}</p>
+                          </div>
+                          <div>
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                paySpecificExpense(e);
+                                setSettleChoiceOpen(false);
+                              }}
+                              disabled={disabledExpenses.includes(e.id)}
+                            >
+                              {disabledExpenses.includes(e.id) ? "Processing" : "Settle This Expense"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    {expenses.filter((e) => e.paidBy?.id === settleChoiceTarget.member.user.id && (e.splits || []).find((s) => s.user?.id === currentUserId && !s.settled)).length === 0 && (
+                      <p className="text-xs text-muted-foreground">No outstanding specific expenses</p>
+                    )}
+                  </div>
+                </div>
+
+                <Button variant="outline" className="w-full rounded-xl" onClick={() => setSettleChoiceOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>

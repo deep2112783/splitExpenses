@@ -17,6 +17,7 @@ import {
   readCachedAuthResponse,
   writeCachedAuthResponse,
 } from "@/lib/api";
+import { addLocalPendingRequest, getLocalPendingRequests } from "@/lib/api";
 import { categoryIcons, expenseCategoryIcons, formatCurrency } from "@/lib/mock-data";
 import { toast } from "sonner";
 
@@ -109,6 +110,16 @@ const Expenses = () => {
     !isSettledForCurrentUser(expense) &&
     expense?.group?.id;
 
+  // consider local pending requests to suppress duplicate cash requests
+  const localPending = getLocalPendingRequests();
+  function hasLocalPendingForExpense(expense) {
+    try {
+      return localPending.some((p) => String(p.groupId) === String(expense.group.id) && (p.expenseId === expense.id || String(p.to) === String(expense.paidBy.id)));
+    } catch (_e) {
+      return false;
+    }
+  }
+
   async function settleExpense(expense) {
     if (!canSettleExpense(expense)) return;
 
@@ -119,7 +130,7 @@ const Expenses = () => {
       );
       if (useCash) {
         const myShare = getMyShare(expense);
-        await authApiRequest(`/api/settlements/${expense.group.id}/requests`, {
+        const resp = await authApiRequest(`/api/settlements/${expense.group.id}/requests`, {
           method: "POST",
           body: JSON.stringify({
             toUserId: expense.paidBy.id,
@@ -129,6 +140,17 @@ const Expenses = () => {
           }),
         });
         toast.success("Cash settlement request sent to payer");
+        try {
+          addLocalPendingRequest({
+            requestId: resp?.requestId || null,
+            groupId: expense.group.id,
+            from: getStoredUser()?.id,
+            to: expense.paidBy.id,
+            expenseId: expense.id,
+            amount: myShare,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (_e) {}
       } else {
         await authApiRequest(`/api/groups/${expense.group.id}/expenses/${expense.id}/settle`, {
           method: "POST",
@@ -222,14 +244,18 @@ const Expenses = () => {
                 </button>
 
                 {canSettleExpense(expense) ? (
-                  <Button
-                    variant="outline"
-                    className="w-full rounded-xl"
-                    onClick={() => settleExpense(expense)}
-                    disabled={settlingExpenseId === expense.id}
-                  >
-                    {settlingExpenseId === expense.id ? "Settling..." : "Settle"}
-                  </Button>
+                  hasLocalPendingForExpense(expense) ? (
+                    <div className="text-sm text-muted-foreground">Pending</div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="w-full rounded-xl"
+                      onClick={() => settleExpense(expense)}
+                      disabled={settlingExpenseId === expense.id}
+                    >
+                      {settlingExpenseId === expense.id ? "Settling..." : "Settle"}
+                    </Button>
+                  )
                 ) : null}
               </div>
             ))}

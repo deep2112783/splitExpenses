@@ -13,7 +13,7 @@ SplitSmart is a web application to split expenses inside groups, track balances,
 
 ## Tech Stack
 
-- Frontend: React (Vite) + TailwindCSS 
+- Frontend: React (Vite) + TailwindCSS + shadcn UI primitives
 - Backend: Node.js + Express
 - Database: MongoDB (via Mongoose)
 
@@ -37,7 +37,7 @@ SplitSmart is a web application to split expenses inside groups, track balances,
     - `utils/`
     - `middleware/`
 
-
+> Note: See the code for individual files in each folder (pages, routes, models). The folders above contain the application code and UI primitives.
 
 ## Important files
 
@@ -82,9 +82,49 @@ npm run dev
 
 Vite will start the dev server and print the local URL (e.g. `http://localhost:8080` or another available port). The frontend proxies `/api` to the server port configured in `client/vite.config.js` (default target `http://localhost:5001`).
 
+## Notes and tips
 
+- The client stores a small local cache of outgoing pending settlement requests to prevent duplicate cash requests from multiple UI sections (Groups / Expenses / Balances). These are recorded in `sessionStorage` and cleared when the server-accepted events are observed.
+- If the dev client shows the wrong origin or port, check `client/vite.config.js` (server port and proxy) and `server/.env` (CLIENT_ORIGIN).
+- To change the displayed favicon or site meta, edit `client/index.html`.
 
+## Build and deploy
 
+1. Build client
+
+```bash
+cd client
+npm run build
+```
+
+2. Serve built client (your choice of static host) and run the server in production mode (`node src/server.js`) with `server/.env` configured for production.
+
+## Contributing
+
+PRs, issues and feature requests are welcome. Please open issues for bugs or feature ideas and create small, focused pull requests.
+
+## License
+
+Add your license information here.
+# Welcome to your SplitSmart project
+
+## Project info
+
+**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+
+## How can I edit this code?
+
+There are several ways of editing your application.
+
+**Use Lovable**
+
+If you used Lovable to generate this repo, continue managing the project there. Changes made via Lovable will be committed automatically to this repo.
+
+**Use your preferred IDE**
+
+If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+
+The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
 
 Follow these steps:
 
@@ -102,7 +142,19 @@ npm i
 npm run dev
 ```
 
+**Edit a file directly in GitHub**
 
+- Navigate to the desired file(s).
+- Click the "Edit" button (pencil icon) at the top right of the file view.
+- Make your changes and commit the changes.
+
+**Use GitHub Codespaces**
+
+- Navigate to the main page of your repository.
+- Click on the "Code" button (green button) near the top right.
+- Select the "Codespaces" tab.
+- Click on "New codespace" to launch a new Codespace environment.
+- Edit files directly within the Codespace and commit and push your changes once you're done.
 
 ## What technologies are used for this project?
 
@@ -111,6 +163,17 @@ This project is built with:
 - Vite
 - JavaScript
 - React
+- shadcn-ui
 - Tailwind CSS
 
+## How can I deploy this project?
 
+Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+
+## Can I connect a custom domain to my Lovable project?
+
+Yes, you can!
+
+To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+
+Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)

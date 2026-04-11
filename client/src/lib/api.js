@@ -74,6 +74,37 @@ export function readCachedAuthResponse(path) {
   }
 }
 
+const LOCAL_PENDING_KEY = "split-smartly:local:pendingRequests";
+
+export function getLocalPendingRequests() {
+  try {
+    const raw = sessionStorage.getItem(LOCAL_PENDING_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+export function addLocalPendingRequest(item) {
+  try {
+    const list = getLocalPendingRequests();
+    list.push(item);
+    sessionStorage.setItem(LOCAL_PENDING_KEY, JSON.stringify(list));
+  } catch (_e) {
+    // ignore
+  }
+}
+
+export function removeLocalPendingRequest(matchFn) {
+  try {
+    const list = getLocalPendingRequests();
+    const filtered = list.filter((i) => !matchFn(i));
+    sessionStorage.setItem(LOCAL_PENDING_KEY, JSON.stringify(filtered));
+  } catch (_e) {
+    // ignore
+  }
+}
+
 export function writeCachedAuthResponse(path, data) {
   try {
     sessionStorage.setItem(getAuthCacheKey(path), JSON.stringify(data));
