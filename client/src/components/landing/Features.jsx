@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Split, Users, Wallet, Bell, Shield, Smartphone } from "lucide-react";import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Split, Users, Bell, Shield, Smartphone, BarChart3 } from "lucide-react";import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 
 const features = [
 {
@@ -13,9 +13,9 @@ const features = [
   description: "Create groups for trips, roommates, or family. Invite via code or email."
 },
 {
-  icon: Wallet,
-  title: "UPI Payments",
-  description: "Settle debts instantly via Google Pay, PhonePe, or Paytm with one tap."
+  icon: BarChart3,
+  title: "Balance Overview",
+  description: "See who owes whom at a glance with live group balances and clear summaries."
 },
 {
   icon: Bell,
@@ -47,7 +47,7 @@ const Features = () => {
           _jsx("h2", { className: "text-3xl md:text-4xl font-bold font-display mb-4", children: "Everything you need to split smart" }
 
           ), /*#__PURE__*/
-          _jsx("p", { className: "text-muted-foreground text-lg max-w-2xl mx-auto", children: "From tracking expenses to settling payments, SplitSmart handles it all." }
+          _jsx("p", { className: "text-muted-foreground text-lg max-w-2xl mx-auto", children: "From tracking expenses to balancing group costs, SplitSmart handles it all." }
 
           )] }
         ), /*#__PURE__*/
